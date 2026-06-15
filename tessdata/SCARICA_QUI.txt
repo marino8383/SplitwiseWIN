@@ -1,0 +1,10 @@
+Metti qui il file: ita.traineddata
+
+Scaricalo da (versione LSTM, ~13 MB, coerente con EngineMode.LstmOnly):
+  https://github.com/tesseract-ocr/tessdata_fast/raw/main/ita.traineddata
+
+Il file deve trovarsi esattamente in:
+  tessdata\ita.traineddata
+
+Verra' copiato automaticamente in bin\Debug\net8.0-windows\tessdata\ a ogni build
+(regola <None Include="tessdata\**\*"> nel .csproj).
