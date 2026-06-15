@@ -50,7 +50,7 @@ public class MainForm : Form
     private string? _ctxDescription;   // descrizione della riga su cui si è fatto clic destro
     private TextBox _pasteBox = null!;
     private DataGridView _gridPending = null!, _gridSent = null!, _gridArchive = null!;
-    private Button _btnParse = null!, _btnCsv = null!, _btnCsvFolder = null!, _btnStamp = null!, _btnAddManual = null!;
+    private Button _btnParse = null!, _btnCsv = null!, _btnAddManual = null!;
     private Button _btnPasteStamp = null!;
     private Button _btnSend = null!, _btnArchiveSel = null!;
     private NumericUpDown _numNearby = null!;
@@ -103,18 +103,28 @@ public class MainForm : Form
         };
         var topButtons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 38 };
         _btnParse = new Button { Text = "Analizza testo", Width = 115 };
-        _btnCsv = new Button { Text = "Carica CSV/Satispay…", Width = 145 };
-        _btnCsvFolder = new Button { Text = "Processa CSV (cartella)…", Width = 175 };
-        _btnStamp = new Button { Text = "Processa STAMP (cartella)…", Width = 195 };
+        _btnCsv = new Button { Text = "Carica file (BPER/Satispay/CSV)…", Width = 215 };
         _btnPasteStamp = new Button { Text = "Incolla immagine (STAMP)", Width = 185 };
         _btnAddManual = new Button { Text = "+ Riga manuale", Width = 115 };
         _btnParse.Click += (_, _) => ImportRows(ExpenseParser.ParseText(_pasteBox.Text));
         _btnCsv.Click += (_, _) => LoadCsv();
-        _btnCsvFolder.Click += (_, _) => ProcessCsvFolder();
-        _btnStamp.Click += (_, _) => ProcessStamps();
         _btnPasteStamp.Click += (_, _) => PasteStampFromClipboard();
         _btnAddManual.Click += (_, _) => AddManualRow();
-        topButtons.Controls.AddRange(new Control[] { _btnParse, _btnCsv, _btnCsvFolder, _btnStamp, _btnPasteStamp, _btnAddManual });
+        var btnInbox = new Button { Text = "Processa inbox", Width = 120 };
+        btnInbox.Click += async (_, _) =>
+        {
+            if (string.IsNullOrWhiteSpace(_cfg?.InboxFolder))
+            { SetStatus("Cartella inbox non configurata (InboxFolder in appsettings.json).", true); return; }
+            if (ImportFolder(_cfg.InboxFolder) > 0) await CheckPendingDuplicatesAsync();
+        };
+        var btnFolder = new Button { Text = "Processa cartella…", Width = 150 };
+        btnFolder.Click += async (_, _) =>
+        {
+            using var fbd = new FolderBrowserDialog { Description = "Cartella con file BPER/Satispay/CSV o screenshot" };
+            if (fbd.ShowDialog() != DialogResult.OK) return;
+            if (ImportFolder(fbd.SelectedPath) > 0) await CheckPendingDuplicatesAsync();
+        };
+        topButtons.Controls.AddRange(new Control[] { _btnParse, _btnCsv, _btnPasteStamp, btnInbox, btnFolder, _btnAddManual });
         top.Controls.Add(_pasteBox);
         top.Controls.Add(topButtons);
 
@@ -449,6 +459,10 @@ public class MainForm : Form
             SetStatus($"Pronto. Gruppo con {_members.Count} membri.");
             await CheckPendingDuplicatesAsync();   // colora subito le spese già in 'Da inviare'
             _ = CheckSentAsync();                  // verifica all'avvio le inviate non più su Splitwise
+
+            // auto-import dei file lasciati nella cartella "inbox"
+            if (ImportFolder(_cfg.InboxFolder) > 0)
+                await CheckPendingDuplicatesAsync();
         }
         catch (Exception ex)
         {
@@ -460,7 +474,7 @@ public class MainForm : Form
     }
 
     // ---------- IMPORT ----------
-    private void ImportRows(List<ExpenseRow> rows)
+    private void ImportRows(List<ExpenseRow> rows, bool checkDup = true)
     {
         int added = 0;
         foreach (var r in rows)
@@ -473,7 +487,62 @@ public class MainForm : Form
         }
         LoadPending();
         SetStatus($"{added} spese importate in 'Da inviare'.");
-        _ = CheckPendingDuplicatesAsync();   // verifica su Splitwise ed evidenzia in rosso
+        if (checkDup) _ = CheckPendingDuplicatesAsync();   // verifica su Splitwise ed evidenzia in rosso
+    }
+
+    private static readonly string[] DataExts = { ".xls", ".xlsx", ".csv", ".txt" };
+    private static readonly string[] ImageExts = { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff" };
+
+    /// <summary>
+    /// Importa tutti i file di una cartella: .xls=BPER, .xlsx=Satispay, .csv/.txt=testo,
+    /// immagini=OCR (STAMP). Sposta i file processati in "processati". Ritorna i movimenti importati.
+    /// </summary>
+    private int ImportFolder(string folder)
+    {
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder)) return 0;
+        var processed = Path.Combine(folder, "processati");
+        var tessData = Path.Combine(AppContext.BaseDirectory, "tessdata");
+        bool ocrOk = File.Exists(Path.Combine(tessData, "ita.traineddata"));
+
+        int total = 0, files = 0, skippedImg = 0;
+        foreach (var file in Directory.EnumerateFiles(folder)
+                     .Where(f => { var x = Path.GetExtension(f).ToLowerInvariant(); return DataExts.Contains(x) || ImageExts.Contains(x); })
+                     .OrderBy(f => f))
+        {
+            try
+            {
+                var ext = Path.GetExtension(file).ToLowerInvariant();
+                List<ExpenseRow> rows;
+                if (ImageExts.Contains(ext))
+                {
+                    if (!ocrOk) { skippedImg++; continue; }   // niente tessdata: lascio l'immagine
+                    rows = StampProcessor.ProcessSingleFile(file, tessData).Select(r => r.Row).ToList();
+                }
+                else
+                {
+                    rows = ext switch
+                    {
+                        ".xls" => BperXlsImporter.Import(file),
+                        ".xlsx" => SatispayImporter.Import(file),
+                        _ => ExpenseParser.ParseText(File.ReadAllText(file))
+                    };
+                }
+                ImportRows(rows, checkDup: false);   // un solo controllo duplicati alla fine
+                total += rows.Count; files++;
+
+                Directory.CreateDirectory(processed);
+                var dest = Path.Combine(processed, Path.GetFileName(file));
+                if (File.Exists(dest))
+                    dest = Path.Combine(processed,
+                        $"{Path.GetFileNameWithoutExtension(file)}_{DateTime.Now:yyyyMMdd_HHmmss}{ext}");
+                File.Move(file, dest);
+            }
+            catch (Exception ex) { SetStatus($"Errore su {Path.GetFileName(file)}: {ex.Message}", true); }
+        }
+        if (files > 0 || skippedImg > 0)
+            SetStatus($"Cartella: {files} file processati, {total} movimenti." +
+                      (skippedImg > 0 ? $" {skippedImg} immagini saltate (manca tessdata/ita.traineddata)." : ""));
+        return total;
     }
 
     // Colori dei tre livelli di match con Splitwise
@@ -559,39 +628,6 @@ public class MainForm : Form
             SetStatus($"{rows.Count} movimenti importati.");
         }
         catch (Exception ex) { SetStatus("Errore import: " + ex.Message, true); }
-    }
-
-    private void ProcessCsvFolder()
-    {
-        using var fbd = new FolderBrowserDialog { Description = "Cartella Drive con i CSV BPER da processare" };
-        if (fbd.ShowDialog() != DialogResult.OK) return;
-        SetStatus("Lettura CSV…");
-        try
-        {
-            var res = CsvFolderProcessor.ProcessFolder(fbd.SelectedPath, archive: true);
-            ImportRows(res.Rows);
-            var msg = $"{res.ProcessedFiles.Count} CSV processati, archiviati {res.ArchivedFiles.Count}.";
-            if (res.Errors.Count > 0) { MessageBox.Show(string.Join("\n", res.Errors), "Errori CSV"); msg += $" Errori: {res.Errors.Count}."; }
-            SetStatus(msg, res.Errors.Count > 0);
-        }
-        catch (Exception ex) { SetStatus("Errore cartella CSV: " + ex.Message, true); }
-    }
-
-    private void ProcessStamps()
-    {
-        using var fbd = new FolderBrowserDialog { Description = "Cartella con gli screenshot delle spese" };
-        if (fbd.ShowDialog() != DialogResult.OK) return;
-        if (!TryGetTessData(out var tessData)) return;
-
-        SetStatus("OCR in corso…");
-        try
-        {
-            var results = StampProcessor.ProcessFolder(fbd.SelectedPath, tessData);
-            ImportRows(results.Select(r => r.Row).ToList());
-            var noAmount = results.Count(r => !r.Confident);
-            SetStatus($"{results.Count} screenshot processati. Senza importo: {noAmount} (controllali).", noAmount > 0);
-        }
-        catch (Exception ex) { SetStatus("Errore OCR: " + ex.Message, true); }
     }
 
     // Processa un'immagine copiata negli appunti (es. screenshot ritagliato) e ne crea una riga STAMP.
@@ -984,4 +1020,8 @@ public class AppConfig
 
     // Giorni di "intorno" per il match giallo (stesso importo, data vicina) nel controllo duplicati.
     public int NearbyDays { get; set; } = 3;
+
+    // Cartella "in arrivo": all'avvio importa automaticamente i file qui dentro (.xls/.xlsx/.csv/.txt)
+    // e li sposta in "processati". Vuoto = disattivato.
+    public string InboxFolder { get; set; } = "";
 }

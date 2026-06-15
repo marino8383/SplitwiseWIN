@@ -135,7 +135,9 @@ public static class ExpenseParser
     private static readonly string[] NonExpenseKeywords =
     {
         "EMOLUMENTI", "STIPENDIO", "PENSIONE", "ACCREDITO", "GIROCONTO", "RIMBORSO",
-        "STORNO", "CASHBACK", "ADDEBITO SU", "COMPETENZE", "INTERESSI", "BONIFICO A VOSTRO FAVORE"
+        "STORNO", "CASHBACK", "ADDEBITO SU", "COMPETENZE", "INTERESSI", "BONIFICO A VOSTRO FAVORE",
+        "CARTA DI CREDITO",     // riepilogo mensile carta di credito sul conto (singole già nell'export carta)
+        "RICARICA DELL'APP"     // ricarica Satispay sul conto (già coperta dall'import Satispay)
     };
 
     /// <summary>Vero se la dicitura indica un'entrata/movimento interno (non una spesa da dividere).</summary>

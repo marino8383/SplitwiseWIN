@@ -11,8 +11,6 @@ namespace SplitwiseUploader;
 /// </summary>
 public static class StampProcessor
 {
-    private static readonly string[] Extensions = { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff" };
-
     private static readonly Regex AmountRx = new(
         @"(?:€|EUR)?\s*(\d{1,3}(?:[.\s]\d{3})*(?:,\d{2})|\d+[.,]\d{2})\s*(?:€|EUR)?",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -27,19 +25,6 @@ public static class StampProcessor
         public string File { get; set; } = "";
         public string RawText { get; set; } = "";
         public bool Confident { get; set; }
-    }
-
-    public static List<StampResult> ProcessFolder(string folder, string tessDataPath)
-    {
-        var results = new List<StampResult>();
-        if (!Directory.Exists(folder)) return results;
-
-        using var engine = NewEngine(tessDataPath);
-        foreach (var file in Directory.EnumerateFiles(folder)
-                     .Where(f => Extensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
-                     .OrderBy(f => f))
-            results.AddRange(OcrFile(engine, file));
-        return results;
     }
 
     /// <summary>
