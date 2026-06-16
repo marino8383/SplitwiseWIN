@@ -46,6 +46,8 @@ public class MainForm : Form
     private TextBox _txtPendingFilter = null!;
     private DateTimePicker _dtpPendFrom = null!, _dtpPendTo = null!;
     private Label _lblPendingTotal = null!;
+    private ComboBox _cmbShow = null!;
+    private CheckBox _chkExclOverlap = null!;
     private readonly HashSet<string> _excludedDescriptions = new(StringComparer.OrdinalIgnoreCase);
     private string? _ctxDescription;   // descrizione della riga su cui si è fatto clic destro
     private TextBox _pasteBox = null!;
@@ -142,6 +144,8 @@ public class MainForm : Form
         modeCol.DisplayMember = "Text";
         _gridPending.Columns.Add(modeCol);
         _gridPending.Columns.Add(new DataGridViewTextBoxColumn
+        { HeaderText = "Tipo", Width = 70, Name = "colKind", ReadOnly = true });
+        _gridPending.Columns.Add(new DataGridViewTextBoxColumn
         { HeaderText = "Già su Splitwise (stessa data+importo)", Width = 240, Name = "colDup", ReadOnly = true });
         _gridPending.CellValueChanged += PendingGrid_CellValueChanged;
         _gridPending.CurrentCellDirtyStateChanged += (_, _) =>
@@ -194,7 +198,12 @@ public class MainForm : Form
         _dtpPendTo = new DateTimePicker { Left = 452, Top = 5, Width = 110, Format = DateTimePickerFormat.Short, ShowCheckBox = true, Checked = false };
         var btnApply = new Button { Text = "Applica", Left = 572, Top = 3, Width = 80, Height = 25 };
         var btnClearPend = new Button { Text = "Pulisci filtri", Left = 657, Top = 3, Width = 100, Height = 25 };
-        _lblPendingTotal = new Label { AutoSize = true, Left = 770, Top = 8, Text = "" };
+        var lblShow = new Label { Text = "Mostra", AutoSize = true, Left = 770, Top = 8 };
+        _cmbShow = new ComboBox { Left = 820, Top = 5, Width = 85, DropDownStyle = ComboBoxStyle.DropDownList };
+        _cmbShow.Items.AddRange(new object[] { "Uscite", "Entrate", "Tutte" });
+        _cmbShow.SelectedIndex = 0;   // default: uscite (le inviabili)
+        _chkExclOverlap = new CheckBox { Text = "Escludi sovrapposizioni", AutoSize = true, Left = 915, Top = 7, Checked = true };
+        _lblPendingTotal = new Label { AutoSize = true, Left = 1090, Top = 8, Text = "" };
         btnApply.Click += (_, _) => LoadPending();
         btnClearPend.Click += (_, _) =>
         {
@@ -206,7 +215,10 @@ public class MainForm : Form
         _txtPendingFilter.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; LoadPending(); } };
         _dtpPendFrom.ValueChanged += (_, _) => LoadPending();
         _dtpPendTo.ValueChanged += (_, _) => LoadPending();
-        filterBar.Controls.AddRange(new Control[] { lblF, _txtPendingFilter, lblFd, _dtpPendFrom, lblFa, _dtpPendTo, btnApply, btnClearPend, _lblPendingTotal });
+        _cmbShow.SelectedIndexChanged += (_, _) => LoadPending();
+        _chkExclOverlap.CheckedChanged += (_, _) => LoadPending();
+        filterBar.Controls.AddRange(new Control[] { lblF, _txtPendingFilter, lblFd, _dtpPendFrom, lblFa, _dtpPendTo,
+            btnApply, btnClearPend, lblShow, _cmbShow, _chkExclOverlap, _lblPendingTotal });
 
         _tabPending.Controls.Add(_gridPending);
         _tabPending.Controls.Add(bottom);
@@ -214,9 +226,17 @@ public class MainForm : Form
         _tabPending.Controls.Add(top);
     }
 
-    // Vero se la spesa passa il filtro di "Da inviare" (parole tutte presenti + range date).
+    // Vero se la spesa passa il filtro di "Da inviare" (tipo, sovrapposizioni, parole, range date).
     private bool PassesPendingFilter(ExpenseRecord e)
     {
+        // Mostra: Uscite / Entrate / Tutte
+        var show = _cmbShow.SelectedItem?.ToString() ?? "Uscite";
+        if (show == "Uscite" && e.Direction != ExpenseDirection.Uscita) return false;
+        if (show == "Entrate" && e.Direction != ExpenseDirection.Entrata) return false;
+
+        // escludi sovrapposizioni (carta di credito / ricarica Satispay)
+        if (_chkExclOverlap.Checked && ExpenseParser.IsOverlapDescription(e.Description)) return false;
+
         // esclusioni per descrizione (clic destro -> Escludi)
         if (_excludedDescriptions.Contains((e.Description ?? "").Trim())) return false;
 
@@ -480,9 +500,9 @@ public class MainForm : Form
         foreach (var r in rows)
         {
             if (r.Amount <= 0 && string.IsNullOrWhiteSpace(r.Description)) continue;
-            var id = _db.AddPending(r.Date, Desc(r), r.Amount, r.Source);
+            var id = _db.AddPending(r.Date, Desc(r), r.Amount, r.Source, r.Direction);
             _split[id] = (r.Mode, r.CustomShares);
-            _checked.Add(id); // di default selezionate per l'invio
+            if (r.Direction == ExpenseDirection.Uscita) _checked.Add(id); // solo le uscite preselezionate
             added++;
         }
         LoadPending();
@@ -685,10 +705,10 @@ public class MainForm : Form
     {
         _pendingView = _db.GetByStatus(ExpenseStatus.Pending); // già ordinata data DESC
         _gridPending.Rows.Clear();
-        decimal total = 0; int shown = 0;
+        decimal totU = 0, totE = 0; int shown = 0;
         foreach (var e in _pendingView)
         {
-            if (!PassesPendingFilter(e)) continue;   // filtro parole + range date + esclusioni
+            if (!PassesPendingFilter(e)) continue;   // tipo + sovrapposizioni + parole + date + esclusioni
             var mode = _split.TryGetValue(e.Id, out var s) ? s.Mode : SplitMode.Equal;
             int idx = _gridPending.Rows.Add(
                 _checked.Contains(e.Id),
@@ -696,7 +716,9 @@ public class MainForm : Form
                 mode);
             var grow = _gridPending.Rows[idx];
             grow.Tag = e.Id;
-            total += e.Amount; shown++;
+            grow.Cells["colKind"].Value = e.Direction == ExpenseDirection.Entrata ? "Entrata" : "Uscita";
+            if (e.Direction == ExpenseDirection.Entrata) totE += e.Amount; else totU += e.Amount;
+            shown++;
 
             // evidenzia le righe che sembrano già presenti su Splitwise (colore per tipo di match)
             if (_dupInfo.TryGetValue(e.Id, out var dup))
@@ -705,8 +727,8 @@ public class MainForm : Form
                 grow.DefaultCellStyle.BackColor = dup.Color;
             }
         }
-        var excl = _excludedDescriptions.Count > 0 ? $" — {_excludedDescriptions.Count} descrizioni escluse" : "";
-        _lblPendingTotal.Text = $"Totale: {total:0.00} € ({shown} voci){excl}";
+        var excl = _excludedDescriptions.Count > 0 ? $" — {_excludedDescriptions.Count} descr. escluse" : "";
+        _lblPendingTotal.Text = $"Uscite: {totU:0.00} €  |  Entrate: {totE:0.00} €  ({shown} voci){excl}";
     }
 
     private void LoadSent()
@@ -833,9 +855,11 @@ public class MainForm : Form
     {
         var ids = _checked.ToList();
         var toSend = _db.GetByStatus(ExpenseStatus.Pending)
-            .Where(e => ids.Contains(e.Id) && e.Amount > 0)
+            .Where(e => ids.Contains(e.Id) && e.Amount > 0
+                        && e.Direction == ExpenseDirection.Uscita        // le entrate non si inviano
+                        && !ExpenseParser.IsOverlapDescription(e.Description))  // né le sovrapposizioni
             .ToList();
-        if (toSend.Count == 0) { SetStatus("Nessuna riga selezionata (o importi a zero).", true); return; }
+        if (toSend.Count == 0) { SetStatus("Nessuna spesa inviabile selezionata (solo uscite, escluse entrate e sovrapposizioni).", true); return; }
 
         // DEDUP su DATA + IMPORTO contro le INVIATE
         var dups = toSend.Where(e => _db.FindSentDuplicates(e.Date, e.Amount).Count > 0).ToList();

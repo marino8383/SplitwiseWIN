@@ -30,53 +30,88 @@ public static class BperXlsImporter
         using var stream = File.Open(path, FileMode.Open, FileAccess.Read);
         using var reader = ExcelReaderFactory.CreateReader(stream);  // auto-rileva .xls / .xlsx
 
-        var result = new List<ExpenseRow>();
-        do
+        // leggo tutto il primo foglio come matrice di celle
+        var rows = new List<object?[]>();
+        while (reader.Read())
         {
-            while (reader.Read())
+            var r = new object?[reader.FieldCount];
+            for (int i = 0; i < reader.FieldCount; i++) r[i] = reader.GetValue(i);
+            rows.Add(r);
+        }
+
+        // trova l'intestazione (tollerante): "Data operazione" + (Importo | Entrate/Uscite)
+        int hRow = -1, hDate = -1, hDesc = -1, hImp = -1, hEnt = -1, hUsc = -1;
+        for (int ri = 0; ri < rows.Count && hRow < 0; ri++)
+        {
+            int d = -1, ds = -1, imp = -1, ent = -1, usc = -1;
+            for (int ci = 0; ci < rows[ri].Length; ci++)
             {
-                int n = reader.FieldCount;
-                DateTime? date = null;
+                var t = (Convert.ToString(rows[ri][ci], Inv) ?? "").Trim().ToLowerInvariant();
+                if (t.Contains("data") && t.Contains("operazione")) d = ci;
+                else if (t.Contains("descrizione")) ds = ci;
+                else if (t.Contains("importo") && !t.Contains("valuta") && !t.Contains("estera")) imp = ci;
+                else if (t.Contains("entrate")) ent = ci;
+                else if (t.Contains("uscite")) usc = ci;
+            }
+            if (d >= 0 && (imp >= 0 || usc >= 0 || ent >= 0))
+            { hRow = ri; hDate = d; hDesc = ds; hImp = imp; hEnt = ent; hUsc = usc; }
+        }
+
+        var result = new List<ExpenseRow>();
+        if (hRow >= 0)
+        {
+            for (int ri = hRow + 1; ri < rows.Count; ri++)
+            {
+                if (!TryItalianDate(Cell(rows[ri], hDate), out var date)) continue;  // header/footer/totale
+
                 decimal? amount = null;
-                var texts = new List<string>();
+                var dir = ExpenseDirection.Uscita;
+                var usc = AsNumber(Cell(rows[ri], hUsc));
+                var ent = AsNumber(Cell(rows[ri], hEnt));
+                var imp = AsNumber(Cell(rows[ri], hImp));
+                if (usc is not null && usc.Value != 0) { amount = Math.Abs(usc.Value); dir = ExpenseDirection.Uscita; }
+                else if (ent is not null && ent.Value != 0) { amount = Math.Abs(ent.Value); dir = ExpenseDirection.Entrata; }
+                else if (imp is not null && imp.Value != 0) { amount = Math.Abs(imp.Value); dir = imp.Value < 0 ? ExpenseDirection.Uscita : ExpenseDirection.Entrata; }
+                if (amount is null) continue;
 
-                for (int i = 0; i < n; i++)
-                {
-                    var cell = reader.GetValue(i);
-
-                    if (date is null && TryItalianDate(cell, out var d)) { date = d; continue; }
-
-                    var num = AsNumber(cell);
-                    if (amount is null && num is < 0m) { amount = num; continue; }
-
-                    var s = (Convert.ToString(cell, Inv) ?? "").Trim();
-                    if (s.Length > 0) texts.Add(s);
-                }
-
-                if (date is null || amount is null) continue;   // non è una riga movimento
-
-                // descrizione = testo più lungo con lettere, escludendo gli stati ("Contabilizzato"…)
-                var desc = texts
-                    .Where(t => t.Any(char.IsLetter) && !IsStatus(t))
-                    .OrderByDescending(t => t.Length)
-                    .FirstOrDefault() ?? "";
-
-                // escludi emolumenti, addebito riepilogativo della carta e altre voci non-spesa
-                if (ExpenseParser.IsNonExpenseDescription(desc)) continue;
-
+                var desc = (Convert.ToString(Cell(rows[ri], hDesc), Inv) ?? "").Trim();
                 result.Add(new ExpenseRow
                 {
                     Date = date,
-                    Amount = Math.Abs(amount.Value),
+                    Amount = amount.Value,
                     Description = desc,
+                    Direction = dir,
                     Source = ExpenseSource.BPER,
-                    Send = true
+                    Send = dir == ExpenseDirection.Uscita
                 });
             }
-        } while (reader.NextResult());
+            return result;
+        }
 
+        // fallback (intestazione non riconosciuta): solo uscite, euristica per posizione
+        foreach (var row in rows)
+        {
+            DateTime? date = null; decimal? amount = null; var texts = new List<string>();
+            foreach (var cell in row)
+            {
+                if (date is null && TryItalianDate(cell, out var d)) { date = d; continue; }
+                var num = AsNumber(cell);
+                if (amount is null && num is < 0m) { amount = num; continue; }
+                var s = (Convert.ToString(cell, Inv) ?? "").Trim();
+                if (s.Length > 0) texts.Add(s);
+            }
+            if (date is null || amount is null) continue;
+            var desc = texts.Where(t => t.Any(char.IsLetter) && !IsStatus(t)).OrderByDescending(t => t.Length).FirstOrDefault() ?? "";
+            result.Add(new ExpenseRow
+            {
+                Date = date, Amount = Math.Abs(amount.Value), Description = desc,
+                Direction = ExpenseDirection.Uscita, Source = ExpenseSource.BPER, Send = true
+            });
+        }
         return result;
     }
+
+    private static object? Cell(object?[] row, int i) => i >= 0 && i < row.Length ? row[i] : null;
 
     private static bool IsStatus(string t)
     {

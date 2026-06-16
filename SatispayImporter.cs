@@ -68,13 +68,13 @@ public static class SatispayImporter
                     continue;
 
                 var nome = Get(cells, cNome).Trim();
-                if (ExpenseParser.IsNonExpenseDescription(nome)) continue;   // scarta emolumenti/entrate
 
                 result.Add(new ExpenseRow
                 {
                     Date = ParseDate(Get(cells, cData)),
                     Amount = Math.Abs(imp),
                     Description = nome,
+                    Direction = ExpenseDirection.Uscita,
                     Source = ExpenseSource.SATISPAY,
                     Send = true
                 });

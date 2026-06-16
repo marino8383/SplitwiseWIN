@@ -15,6 +15,7 @@ public class ExpenseRow
     public DateTime? Date { get; set; }
     public string Description { get; set; } = "";
     public decimal Amount { get; set; }
+    public ExpenseDirection Direction { get; set; } = ExpenseDirection.Uscita;
     public SplitMode Mode { get; set; } = SplitMode.Equal;
     public ExpenseSource Source { get; set; } = ExpenseSource.MANUALE;
 
@@ -48,6 +49,17 @@ public static class ExpenseParser
 
     private static readonly Regex DayLineRx = new(@"^\*?\s*(\d{1,2})$", RegexOptions.Compiled);
 
+    // Riga che contiene SOLO un importo (eventuale segno, separatori, simbolo €): es. "-300,00 €", "+2.085,00 €"
+    private static readonly Regex AmountOnlyRx = new(
+        @"^[-+]?\s*\d{1,3}(?:[.\s]\d{3})*,\d{2}$", RegexOptions.Compiled);
+
+    private static bool IsAmountLine(string ln, out decimal amount)
+    {
+        amount = 0;
+        var t = ln.Replace("€", "").Replace("EUR", "", StringComparison.OrdinalIgnoreCase).Trim();
+        return AmountOnlyRx.IsMatch(t) && TryParseAmount(t, out amount);
+    }
+
     public static List<ExpenseRow> ParseText(string text)
     {
         var rows = new List<ExpenseRow>();
@@ -80,17 +92,20 @@ public static class ExpenseParser
 
     /// <summary>
     /// Parser per la lista movimenti BPER web copiata come testo. Ogni movimento è un blocco:
-    /// riga giorno ("* 14"), riga mese ("GIU"), descrizione, categoria ("PAGAMENTO"),
-    /// importo ("-21,99 €") ed eventuale tag ("Da contabilizzare").
+    /// riga giorno ("15"), riga mese ("GIU"), descrizione, categoria, importo ("-20,00 €" / "+2.085,00 €")
+    /// ed eventuale tag. La lista è in ordine di data DECRESCENTE e NON riporta l'anno: lo deduco
+    /// (quando il mese "risale" scendendo, siamo nell'anno precedente). Direzione dal segno dell'importo.
     /// </summary>
     private static List<ExpenseRow> ParseBperBlocks(List<string> lines)
     {
         var result = new List<ExpenseRow>();
-        var ym = Regex.Match(string.Join("\n", lines), @"\b(20\d{2})\b");
-        int year = ym.Success ? int.Parse(ym.Groups[1].Value) : DateTime.Now.Year;
 
         bool IsBlockStart(int i) =>
             DayLineRx.IsMatch(lines[i]) && i + 1 < lines.Count && MonthMap.ContainsKey(lines[i + 1]);
+
+        int year = DateTime.Now.Year;
+        int prevMonth = 0;
+        bool first = true;
 
         int i = 0;
         while (i < lines.Count)
@@ -100,29 +115,42 @@ public static class ExpenseParser
             int day = int.Parse(DayLineRx.Match(lines[i]).Groups[1].Value);
             int month = MonthMap[lines[i + 1]];
 
+            // anno dedotto dalla sequenza decrescente
+            if (first) { if (month > DateTime.Now.Month) year--; first = false; }
+            else if (month > prevMonth) year--;   // il mese è "risalito" scendendo => anno precedente
+            prevMonth = month;
+
             decimal? amount = null;
-            var descParts = new List<string>();
+            bool income = false;
+            string? bestDesc = null;
             int j = i + 2;
             for (; j < lines.Count && !IsBlockStart(j); j++)
             {
                 var ln = lines[j];
-                if (amount is null && Regex.IsMatch(ln, @"\d,\d{2}") && TryParseAmount(ln, out var a))
+                // importo SOLO dalla riga che è un importo puro (es. "-300,00 €"), non dalla descrizione
+                if (amount is null && IsAmountLine(ln, out var a))
+                {
                     amount = a;
-                else if (!IsCategoryOrTag(ln) && !MonthMap.ContainsKey(ln))
-                    descParts.Add(ln);
+                    income = a >= 0;   // le uscite hanno il segno '-', le entrate il '+'
+                }
+                else if (!MonthMap.ContainsKey(ln) && ln.Any(char.IsLetter))
+                {
+                    // descrizione = la riga più lunga del blocco (la categoria/tag sono corte)
+                    if (bestDesc is null || ln.Length > bestDesc.Length) bestDesc = ln;
+                }
             }
 
             if (amount != null)
             {
                 DateTime? date = null;
                 try { date = new DateTime(year, month, day); } catch { /* giorno non valido */ }
-                var desc = Regex.Replace(string.Join(" ", descParts), @"\s{2,}", " ").Trim();
-                if (IsNonExpenseDescription(desc)) continue;   // scarta emolumenti/entrate
+                var desc = Regex.Replace(bestDesc ?? "", @"\s{2,}", " ").Trim();
                 result.Add(new ExpenseRow
                 {
                     Date = date,
                     Amount = Math.Abs(amount.Value),
                     Description = desc,
+                    Direction = income ? ExpenseDirection.Entrata : ExpenseDirection.Uscita,
                     Source = ExpenseSource.BPER,
                     SourceLine = desc
                 });
@@ -132,29 +160,17 @@ public static class ExpenseParser
         return result;
     }
 
-    private static readonly string[] NonExpenseKeywords =
-    {
-        "EMOLUMENTI", "STIPENDIO", "PENSIONE", "ACCREDITO", "GIROCONTO", "RIMBORSO",
-        "STORNO", "CASHBACK", "ADDEBITO SU", "COMPETENZE", "INTERESSI", "BONIFICO A VOSTRO FAVORE",
-        "CARTA DI CREDITO",     // riepilogo mensile carta di credito sul conto (singole già nell'export carta)
-        "RICARICA DELL'APP"     // ricarica Satispay sul conto (già coperta dall'import Satispay)
-    };
+    // Voci che SI SOVRAPPONGONO ad altri import (vanno nascoste di default e non inviate):
+    //  - "CARTA DI CREDITO": riepilogo mensile carta sul conto (le singole sono nell'export carta)
+    //  - "RICARICA DELL'APP": ricarica Satispay sul conto (le spese sono nell'export Satispay)
+    private static readonly string[] OverlapKeywords = { "CARTA DI CREDITO", "RICARICA DELL'APP" };
 
-    /// <summary>Vero se la dicitura indica un'entrata/movimento interno (non una spesa da dividere).</summary>
-    public static bool IsNonExpenseDescription(string? desc)
+    /// <summary>Vero se la dicitura è una sovrapposizione con un altro import (carta di credito / ricarica Satispay).</summary>
+    public static bool IsOverlapDescription(string? desc)
     {
         if (string.IsNullOrWhiteSpace(desc)) return false;
         var u = desc.ToUpperInvariant();
-        return NonExpenseKeywords.Any(k => u.Contains(k));
-    }
-
-    private static bool IsCategoryOrTag(string line)
-    {
-        var u = line.ToUpperInvariant().Trim();
-        string[] cats = { "PAGAMENTO", "BONIFICO", "STIPENDIO", "ADDEBITO", "PRELIEVO",
-                          "VERSAMENTO", "ACCREDITO", "COMMISSIONI", "RICARICA" };
-        string[] tags = { "DA CONTABILIZZARE", "RATEIZZABILE" };
-        return cats.Contains(u) || tags.Contains(u);
+        return OverlapKeywords.Any(k => u.Contains(k));
     }
 
     private static ExpenseRow? ParseCsvLine(string line)

@@ -5,6 +5,9 @@ namespace SplitwiseUploader;
 
 public enum ExpenseSource { MANUALE, CSV, STAMP, SATISPAY, BPER }
 
+// Direzione del movimento: spesa (Uscita) o incasso (Entrata). Solo le Uscite si inviano a Splitwise.
+public enum ExpenseDirection { Uscita, Entrata }
+
 // Ciclo di vita di una spesa nel DB.
 public enum ExpenseStatus
 {
@@ -21,6 +24,7 @@ public class ExpenseRecord
     public string Description { get; set; } = "";
     public decimal Amount { get; set; }
     public ExpenseSource Source { get; set; }
+    public ExpenseDirection Direction { get; set; } = ExpenseDirection.Uscita;
     public ExpenseStatus Status { get; set; } = ExpenseStatus.Pending;
 
     public long SplitwiseExpenseId { get; set; }      // 0 finché non inviata
@@ -76,22 +80,33 @@ public class HistoryStore
             CREATE INDEX IF NOT EXISTS ix_status ON expenses(Status);
             """;
         cmd.ExecuteNonQuery();
+
+        // migrazione: colonna Direction (Uscita/Entrata) per i DB già esistenti
+        try
+        {
+            using var mig = c.CreateCommand();
+            mig.CommandText = "ALTER TABLE expenses ADD COLUMN Direction TEXT NOT NULL DEFAULT 'Uscita';";
+            mig.ExecuteNonQuery();
+        }
+        catch { /* colonna già presente */ }
     }
 
     /// <summary>Inserisce una nuova spesa come Pending. Ritorna l'Id locale.</summary>
-    public long AddPending(DateTime? date, string description, decimal amount, ExpenseSource source)
+    public long AddPending(DateTime? date, string description, decimal amount, ExpenseSource source,
+        ExpenseDirection direction = ExpenseDirection.Uscita)
     {
         using var c = Open();
         using var cmd = c.CreateCommand();
         cmd.CommandText = """
-            INSERT INTO expenses (DateTicks, Description, Amount, Source, Status, SplitwiseExpenseId, SentAtUtcTicks, CreatedAtUtcTicks)
-            VALUES ($d, $desc, $amt, $src, 'Pending', 0, NULL, $created);
+            INSERT INTO expenses (DateTicks, Description, Amount, Source, Direction, Status, SplitwiseExpenseId, SentAtUtcTicks, CreatedAtUtcTicks)
+            VALUES ($d, $desc, $amt, $src, $dir, 'Pending', 0, NULL, $created);
             SELECT last_insert_rowid();
             """;
         cmd.Parameters.AddWithValue("$d", (object?)date?.Ticks ?? DBNull.Value);
         cmd.Parameters.AddWithValue("$desc", description);
         cmd.Parameters.AddWithValue("$amt", AmountKey(amount));
         cmd.Parameters.AddWithValue("$src", source.ToString());
+        cmd.Parameters.AddWithValue("$dir", direction.ToString());
         cmd.Parameters.AddWithValue("$created", DateTime.UtcNow.Ticks);
         return (long)(cmd.ExecuteScalar() ?? 0L);
     }
@@ -225,7 +240,7 @@ public class HistoryStore
             iDesc = r.GetOrdinal("Description"), iAmt = r.GetOrdinal("Amount"),
             iSrc = r.GetOrdinal("Source"), iStat = r.GetOrdinal("Status"),
             iSid = r.GetOrdinal("SplitwiseExpenseId"), iSent = r.GetOrdinal("SentAtUtcTicks"),
-            iCreated = r.GetOrdinal("CreatedAtUtcTicks");
+            iCreated = r.GetOrdinal("CreatedAtUtcTicks"), iDir = r.GetOrdinal("Direction");
         while (r.Read())
             list.Add(new ExpenseRecord
             {
@@ -234,6 +249,7 @@ public class HistoryStore
                 Description = r.GetString(iDesc),
                 Amount = decimal.Parse(r.GetString(iAmt), CultureInfo.InvariantCulture),
                 Source = Enum.Parse<ExpenseSource>(r.GetString(iSrc)),
+                Direction = r.IsDBNull(iDir) ? ExpenseDirection.Uscita : Enum.Parse<ExpenseDirection>(r.GetString(iDir)),
                 Status = Enum.Parse<ExpenseStatus>(r.GetString(iStat)),
                 SplitwiseExpenseId = r.GetInt64(iSid),
                 SentAtUtc = r.IsDBNull(iSent) ? null : new DateTime(r.GetInt64(iSent)),
