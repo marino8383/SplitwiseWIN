@@ -17,7 +17,48 @@ internal static class Program
             return;
         }
 
+        // Modalità BATCH senza interfaccia: "SplitwiseUploader.exe inbox" (o "batch").
+        // Processa la cartella InboxFolder, scrive un log giornaliero in .\logs\yyyyMMdd.log ed esce.
+        // Pensata per Windows Task Scheduler. Non invia nulla a Splitwise.
+        if (args.Length > 0 && (args[0].Equals("inbox", StringComparison.OrdinalIgnoreCase)
+                             || args[0].Equals("batch", StringComparison.OrdinalIgnoreCase)))
+        {
+            Environment.ExitCode = RunInboxBatch();
+            return;
+        }
+
         Application.Run(new MainForm());
+    }
+
+    // Esecuzione headless dell'import inbox con log su file. Ritorna 0 se ok, 1 se errore di configurazione.
+    private static int RunInboxBatch()
+    {
+        var logDir = Path.Combine(AppContext.BaseDirectory, "logs");
+        Directory.CreateDirectory(logDir);
+        var logPath = Path.Combine(logDir, $"{DateTime.Now:yyyyMMdd}.log");
+
+        void Log(string msg)
+        {
+            var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {msg}";
+            try { File.AppendAllText(logPath, line + Environment.NewLine); } catch { /* ignora errori di scrittura log */ }
+            Console.WriteLine(line);
+        }
+
+        Log("=== Avvio batch inbox ===");
+        try
+        {
+            var cfgPath = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+            if (!File.Exists(cfgPath)) { Log("ERRORE: appsettings.json non trovato."); return 1; }
+            var cfg = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(cfgPath))!;
+            if (string.IsNullOrWhiteSpace(cfg.InboxFolder)) { Log("ERRORE: InboxFolder non configurato in appsettings.json."); return 1; }
+
+            var db = new HistoryStore();
+            var tessData = Path.Combine(AppContext.BaseDirectory, "tessdata");
+            var (files, added, dup, skippedImg) = InboxProcessor.Run(db, cfg.InboxFolder, tessData, Log);
+            Log($"=== Fine batch: {files} file, {added} importati, {dup} scartati, {skippedImg} immagini saltate ===");
+            return 0;
+        }
+        catch (Exception ex) { Log("ERRORE batch: " + ex); return 1; }
     }
 
     private static async Task ListGroups()

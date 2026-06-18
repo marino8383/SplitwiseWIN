@@ -163,7 +163,15 @@ public static class ExpenseParser
     // Voci che SI SOVRAPPONGONO ad altri import (vanno nascoste di default e non inviate):
     //  - "CARTA DI CREDITO": riepilogo mensile carta sul conto (le singole sono nell'export carta)
     //  - "RICARICA DELL'APP": ricarica Satispay sul conto (le spese sono nell'export Satispay)
-    private static readonly string[] OverlapKeywords = { "CARTA DI CREDITO", "RICARICA DELL'APP" };
+    // Diciture di sovrapposizione/aggregato da NON contare:
+    //  - "CARTA DI CREDITO": riepilogo carta sul conto;
+    //  - "RICARICA DELL'APP": ricarica Satispay (già nei movimenti Satispay);
+    //  - "ADDEBITO SU VS C/C": riga di saldo/pagamento carta sull'export CARTA (totale già coperto dalle singole spese);
+    //  - "VERSO IL TUO CONTO BANCARIO": giroconto Satispay→banca lato Satispay (uscita -200);
+    //  - "ACCREDITO DALL'APP SATISPAY": stesso giroconto lato CONTO BPER (entrata +200). I due si compensano.
+    private static readonly string[] OverlapKeywords =
+        { "CARTA DI CREDITO", "RICARICA DELL'APP", "ADDEBITO SU VS C/C",
+          "VERSO IL TUO CONTO BANCARIO", "ACCREDITO DALL'APP SATISPAY" };
 
     /// <summary>Vero se la dicitura è una sovrapposizione con un altro import (carta di credito / ricarica Satispay).</summary>
     public static bool IsOverlapDescription(string? desc)

@@ -45,7 +45,6 @@ public static class SatispayImporter
             var cData = Col("Data");
             var cNome = Col("Nome");
             var cImporto = Col("Importo");
-            var cTipo = Col("Tipo");
             var cStato = Col("Stato");
             if (cData is null || cImporto is null) continue; // non è il foglio giusto
 
@@ -56,27 +55,23 @@ public static class SatispayImporter
                 if (!decimal.TryParse(impStr, NumberStyles.Any, CultureInfo.InvariantCulture, out var imp))
                     continue;
 
-                var tipo = Get(cells, cTipo);
                 var stato = Get(cells, cStato);
-
-                // solo uscite approvate, niente movimenti interni (risparmi/investimenti/banca)
-                if (imp >= 0) continue;
-                if (cStato != null && !stato.Contains("Approvato", StringComparison.OrdinalIgnoreCase)) continue;
-                if (tipo.Contains("Investimento", StringComparison.OrdinalIgnoreCase) ||
-                    tipo.Contains("Risparmi", StringComparison.OrdinalIgnoreCase) ||
-                    tipo.Contains("Banca", StringComparison.OrdinalIgnoreCase))
+                // importa tutto ciò che è approvato; entrata/uscita dal segno (niente più esclusioni di tipo)
+                if (cStato != null && stato.Length > 0 && !stato.Contains("Approvato", StringComparison.OrdinalIgnoreCase))
                     continue;
+                if (imp == 0) continue;
 
                 var nome = Get(cells, cNome).Trim();
+                var dir = imp < 0 ? ExpenseDirection.Uscita : ExpenseDirection.Entrata;
 
                 result.Add(new ExpenseRow
                 {
                     Date = ParseDate(Get(cells, cData)),
                     Amount = Math.Abs(imp),
                     Description = nome,
-                    Direction = ExpenseDirection.Uscita,
+                    Direction = dir,
                     Source = ExpenseSource.SATISPAY,
-                    Send = true
+                    Send = dir == ExpenseDirection.Uscita
                 });
             }
             return result;

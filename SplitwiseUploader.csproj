@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -7,6 +7,8 @@
     <UseWindowsForms>true</UseWindowsForms>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>SplitwiseUploader</AssemblyName>
+    <!-- Versione: l'ultimo numero (build) viene incrementato da pubblica.ps1 ad ogni pubblicazione. -->
+    <Version>1.0.1</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -18,8 +20,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- appsettings.json (con le TUE chiavi) viene copiato in output per le esecuzioni locali,
+         ma NON nella cartella publish: cosÃ¬ la versione da distribuire non contiene i tuoi parametri. -->
     <None Update="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>Never</CopyToPublishDirectory>
+    </None>
+    <!-- Il modello vuoto viene incluso ovunque, come riferimento per chi riceve l'app. -->
+    <None Update="appsettings.example.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>
   </ItemGroup>
 

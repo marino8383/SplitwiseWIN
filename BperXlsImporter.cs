@@ -57,6 +57,12 @@ public static class BperXlsImporter
             { hRow = ri; hDate = d; hDesc = ds; hImp = imp; hEnt = ent; hUsc = usc; }
         }
 
+        // Carta vs Conto: la "Lista Movimenti Carta" ha una sola colonna Importo (niente Entrate/Uscite);
+        // il conto ha Entrate/Uscite. Fallback sul nome file ("...Carta...").
+        bool isCard = (hRow >= 0 && hImp >= 0 && hEnt < 0 && hUsc < 0)
+                      || Path.GetFileName(path).Contains("carta", StringComparison.OrdinalIgnoreCase);
+        var src = isCard ? ExpenseSource.BPERCARD : ExpenseSource.BPER;
+
         var result = new List<ExpenseRow>();
         if (hRow >= 0)
         {
@@ -81,7 +87,7 @@ public static class BperXlsImporter
                     Amount = amount.Value,
                     Description = desc,
                     Direction = dir,
-                    Source = ExpenseSource.BPER,
+                    Source = src,
                     Send = dir == ExpenseDirection.Uscita
                 });
             }
@@ -105,7 +111,7 @@ public static class BperXlsImporter
             result.Add(new ExpenseRow
             {
                 Date = date, Amount = Math.Abs(amount.Value), Description = desc,
-                Direction = ExpenseDirection.Uscita, Source = ExpenseSource.BPER, Send = true
+                Direction = ExpenseDirection.Uscita, Source = src, Send = true
             });
         }
         return result;
