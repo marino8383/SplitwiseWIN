@@ -4,6 +4,9 @@ obj/
 .vs/
 *.user
 
+# Node / Playwright (per lo scarico BPER automatico)
+node_modules/
+
 # Dati locali e segreti (NON pubblicare le chiavi API)
 appsettings.json
 history.db

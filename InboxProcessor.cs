@@ -15,11 +15,12 @@ public static class InboxProcessor
     private static readonly HashSet<string> ImageExts =
         new(new[] { ".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff" }, StringComparer.OrdinalIgnoreCase);
 
-    public static (int files, int added, int dup, int skippedImg) Run(
+    public static (int files, int added, int dup, int skippedImg, List<long> addedIds) Run(
         HistoryStore db, string folder, string tessData, Action<string> log)
     {
+        var addedIds = new List<long>();
         if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
-        { log($"Cartella inbox inesistente o non configurata: '{folder}'."); return (0, 0, 0, 0); }
+        { log($"Cartella inbox inesistente o non configurata: '{folder}'."); return (0, 0, 0, 0, addedIds); }
 
         var processed = Path.Combine(folder, "processati");
         bool ocrOk = File.Exists(Path.Combine(tessData, "ita.traineddata"));
@@ -67,7 +68,8 @@ public static class InboxProcessor
                         log($"    SCARTATO (già presente): {dataStr}  {r.Amount:0.00}€  {desc}");
                         continue;
                     }
-                    db.AddPending(r.Date, desc, r.Amount, r.Source, r.Direction, batch);
+                    var newId = db.AddPending(r.Date, desc, r.Amount, r.Source, r.Direction, batch);
+                    addedIds.Add(newId);
                     a++;
                     log($"    importato: {dataStr}  {r.Amount:0.00}€  {desc}");
                 }
@@ -86,7 +88,7 @@ public static class InboxProcessor
 
         log($"TOTALE: {files} file processati, {added} importati, {dup} già presenti" +
             (skippedImg > 0 ? $", {skippedImg} immagini saltate (manca tessdata)" : "") + ".");
-        return (files, added, dup, skippedImg);
+        return (files, added, dup, skippedImg, addedIds);
     }
 
     // Stessa chiave di deduplica dell'import interattivo (MainForm): data(giorno)+importo(2dec)+descrizione normalizzata.

@@ -8,7 +8,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>SplitwiseUploader</AssemblyName>
     <!-- Versione: l'ultimo numero (build) viene incrementato da pubblica.ps1 ad ogni pubblicazione. -->
-    <Version>1.0.1</Version>
+    <Version>1.0.4</Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -28,6 +28,15 @@
     </None>
     <!-- Il modello vuoto viene incluso ovunque, come riferimento per chi riceve l'app. -->
     <None Update="appsettings.example.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <!-- Script di scarico BPER assistito: copiato anche in publish (quindi nella cartella di prod SW). -->
+    <None Update="scarica-bper.cmd">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </None>
+    <None Update="scarica-bper.ps1">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </None>

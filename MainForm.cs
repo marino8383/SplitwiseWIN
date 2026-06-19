@@ -59,6 +59,7 @@ public class MainForm : Form
     private ComboBox _cmbSource = null!;
     private CheckBox _chkMultiTag = null!;
     private CheckBox _chkOnlyExcluded = null!;
+    private CheckBox _chkOnlySentApp = null!;
     private List<(string Keyword, string Tag)> _tagRules = new();   // cache regole per i tag in griglia
     private readonly HashSet<string> _excludedDescriptions = new(StringComparer.OrdinalIgnoreCase);
     private string? _ctxDescription;   // descrizione della riga su cui si è fatto clic destro
@@ -76,7 +77,11 @@ public class MainForm : Form
     private Label _envBanner = null!;
     private GroupBox _grpSplitwise = null!;
     private bool _splitwiseReady;   // true solo se autenticazione Splitwise riuscita (API key configurate)
-    private TabPage _tabRules = null!, _tabStats = null!, _tabPaste = null!, _tabLog = null!, _tabOptions = null!;
+    private TabPage _tabRules = null!, _tabStats = null!, _tabPaste = null!, _tabLog = null!, _tabOptions = null!, _tabSwRules = null!;
+    private ListBox _lstSwRules = null!;
+    private TextBox _txtSwRule = null!;
+    private List<string> _swRules = new();                 // frasi-regola per l'invio automatico a Splitwise
+    private readonly List<long> _autoCandidateIds = new();  // id appena importati, da valutare per l'auto-invio
     // controlli scheda Opzioni
     private TextBox _optDbCurrent = null!;
     private TextBox _optDbPath = null!, _optKey = null!, _optSecret = null!, _optGroup = null!,
@@ -118,7 +123,8 @@ public class MainForm : Form
         _tabStats = new TabPage("Statistiche");
         _tabLog = new TabPage("Importazioni");
         _tabOptions = new TabPage("Opzioni");
-        _tabs.TabPages.AddRange(new[] { _tabPending, _tabSent, _tabArchive, _tabSearch, _tabPaste, _tabRules, _tabStats, _tabLog, _tabOptions });
+        _tabSwRules = new TabPage("Regole Splitwise");
+        _tabs.TabPages.AddRange(new[] { _tabPending, _tabSent, _tabArchive, _tabSearch, _tabPaste, _tabRules, _tabStats, _tabLog, _tabSwRules, _tabOptions });
         _tabs.Selecting += (_, e) =>
         {
             if (e.TabPage == _tabSent) LoadSent();   // verifica Splitwise solo col bottone
@@ -140,6 +146,7 @@ public class MainForm : Form
         BuildStatsTab();
         BuildLogTab();
         BuildOptionsTab();
+        BuildSwRulesTab();
 
         Controls.Add(_tabs);
 
@@ -232,11 +239,14 @@ public class MainForm : Form
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Crea regola tag…", null, (_, _) => QuickAddRuleFromRow());
         menu.Items.Add("Tag manuale (questa riga + le spuntate)…", null, (_, _) => SetManualTagForRow());
+        var miAddSwRule = new ToolStripMenuItem("Aggiungi regola Splitwise…", null, (_, _) => AddSplitwiseRuleForRow());
+        menu.Items.Add(miAddSwRule);
+        menu.Opening += (_, _) => { miAddSwRule.Visible = _splitwiseReady; };   // solo se Splitwise attivo
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Suddividi movimento…", null, (_, _) => SplitMovementForRow());
         menu.Items.Add("Escludi/includi nei totali", null, (_, _) => ToggleExcludeTotalsForRow());
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Elimina questa riga (anche se inviata)…", null, (_, _) => DeleteRowUnderCursor());
+        menu.Items.Add("Elimina questa riga…", null, async (_, _) => await DeleteRowUnderCursor());
         menu.Items.Add("Elimina selezionate", null, (_, _) => DeleteChecked());
         _gridPending.ContextMenuStrip = menu;
 
@@ -315,8 +325,9 @@ public class MainForm : Form
         _cmbOverlap = new ComboBox { Left = 560, Top = 36, Width = 130, DropDownStyle = ComboBoxStyle.DropDownList };
         _cmbOverlap.Items.AddRange(new object[] { "Escludi", "Includi tutto", "Solo sovrapposte" });
         _cmbOverlap.SelectedIndex = 0;   // default: escludi
-        _chkMultiTag = new CheckBox { Text = "Solo con più tag", AutoSize = true, Left = 705, Top = 39 };
-        _chkOnlyExcluded = new CheckBox { Text = "Solo esclusi dai totali", AutoSize = true, Left = 830, Top = 39 };
+        _chkMultiTag = new CheckBox { Text = "Solo + tag", AutoSize = true, Left = 700, Top = 39 };
+        _chkOnlyExcluded = new CheckBox { Text = "Solo esclusi", AutoSize = true, Left = 793, Top = 39 };
+        _chkOnlySentApp = new CheckBox { Text = "Solo inviate (app)", AutoSize = true, Left = 893, Top = 39 };
 
         // riga 3: range importo (>= da, <= a; vuoto = nessun limite) + totale
         var lblAmt = new Label { Text = "Importo da", AutoSize = true, Left = 10, Top = 69 };
@@ -340,6 +351,7 @@ public class MainForm : Form
             _cmbSource.SelectedIndex = 0;
             _chkMultiTag.Checked = false;
             _chkOnlyExcluded.Checked = false;
+            _chkOnlySentApp.Checked = false;
             _excludedDescriptions.Clear();
             _importBatchFilter = 0;   // rimuove il filtro "movimenti di un registro"
             _checked.Clear();   // reset completo: azzera anche le selezioni (anche su righe non visibili)
@@ -349,7 +361,7 @@ public class MainForm : Form
         _txtPendingFilter.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; ApplyPendingFilters(); } };
         filterBar.Controls.AddRange(new Control[] { lblDate, _dtpPendFrom, lblFa, _dtpPendTo, lblShow, _cmbShow,
             lblSrc, _cmbSource, btnApply, btnClearPend,
-            lblF, _txtPendingFilter, lblTag, _btnTagFilter, lblOv, _cmbOverlap, _chkMultiTag, _chkOnlyExcluded,
+            lblF, _txtPendingFilter, lblTag, _btnTagFilter, lblOv, _cmbOverlap, _chkMultiTag, _chkOnlyExcluded, _chkOnlySentApp,
             lblAmt, _txtPendAmtFrom, lblAmtTo, _txtPendAmtTo, _lblPendingTotal });
 
         // Legenda colori "Già su Splitwise" (fissa, sopra la griglia)
@@ -385,6 +397,7 @@ public class MainForm : Form
             ImportRows(ExpenseParser.ParseText(_pasteBox.Text), origin: "Incolla testo");
             _pasteBox.Clear();
             _tabs.SelectedTab = _tabPending;   // mostra il risultato in 'Da inviare'
+            _ = RunSplitwiseAutoFlush();
         };
         var lbl = new Label { AutoSize = true, Left = 160, Top = 14,
             Text = "Riconosce la lista movimenti BPER (deduce anno e direzione) e i formati testo/CSV." };
@@ -427,6 +440,9 @@ public class MainForm : Form
 
         // solo righe escluse dai totali (per rivederle/gestirle)
         if (_chkOnlyExcluded.Checked && !e.ExcludeTotals) return false;
+
+        // solo righe inviate a Splitwise DA QUESTA APP (Inviata + id Splitwise)
+        if (_chkOnlySentApp.Checked && !(e.Status == ExpenseStatus.Inviata && e.SplitwiseExpenseId > 0)) return false;
 
         // filtro per registro di import (impostato da "Mostra movimenti del registro" nella scheda Importazioni)
         if (_importBatchFilter != 0 && e.ImportBatch != _importBatchFilter) return false;
@@ -699,21 +715,96 @@ public class MainForm : Form
         _tabRules.Controls.Add(bottom);
     }
 
-    // Elimina (fisicamente, localmente) la riga sotto il cursore, anche se è già inviata. Non tocca Splitwise.
-    private void DeleteRowUnderCursor()
+    // Elimina la riga sotto il cursore. Se è stata inviata DALL'APP a Splitwise (Inviata + id) e Splitwise è attivo,
+    // chiede COSA eliminare: solo locale / entrambe / solo Splitwise. Altrimenti elimina solo in locale.
+    private async Task DeleteRowUnderCursor()
     {
         if (_ctxRowId == 0) { SetStatus("Clic destro su una riga, poi 'Elimina questa riga'.", true); return; }
         var rec = _pendingView.FirstOrDefault(x => x.Id == _ctxRowId);
-        var info = rec != null ? $"{rec.Date:dd/MM/yyyy} — {rec.Description} — {rec.Amount:0.00} €" : "questa riga";
-        var sentNote = rec?.Status == ExpenseStatus.Inviata
-            ? "\n\n(È già inviata: viene rimossa solo dallo storico locale, NON da Splitwise.)" : "";
-        if (MessageBox.Show($"Eliminare definitivamente?\n\n{info}{sentNote}", "Elimina riga",
+        var info = rec != null ? $"{rec.Date:dd/MM/yyyy} - {rec.Description} - {rec.Amount:0.00} €" : "questa riga";
+        bool sentApp = rec != null && _splitwiseReady && rec.Status == ExpenseStatus.Inviata && rec.SplitwiseExpenseId > 0;
+
+        if (sentApp)
+        {
+            var choice = AskSentDeleteChoice(info, rec!.SplitwiseExpenseId);
+            switch (choice)
+            {
+                case SentDeleteChoice.Annulla:
+                    return;
+
+                case SentDeleteChoice.SoloLocale:
+                    _db.DeleteMany(new List<long> { rec.Id });
+                    CleanupRowRefs(rec.Id);
+                    _pendingNeedsReload = true; LoadPending();
+                    SetStatus("Riga eliminata in locale. Il pagamento resta su Splitwise.");
+                    return;
+
+                case SentDeleteChoice.SoloSplitwise:
+                    try
+                    {
+                        BeginBusy("Eliminazione su Splitwise…");
+                        await _client!.DeleteExpenseAsync(rec.SplitwiseExpenseId);
+                        _db.UnmarkSent(rec.Id); _dupInfo.Remove(rec.Id);
+                        _pendingNeedsReload = true; LoadPending();
+                        SetStatus("Pagamento eliminato su Splitwise; riga riportata tra i 'da inviare'.");
+                    }
+                    catch (Exception ex) { SetStatus("Eliminazione su Splitwise non riuscita: " + ex.Message, true); }
+                    finally { EndBusy(); }
+                    return;
+
+                case SentDeleteChoice.Entrambe:
+                    try
+                    {
+                        BeginBusy("Eliminazione su Splitwise…");
+                        await _client!.DeleteExpenseAsync(rec.SplitwiseExpenseId);   // prima Splitwise; se fallisce non cancello in locale
+                        _db.DeleteMany(new List<long> { rec.Id });
+                        CleanupRowRefs(rec.Id);
+                        _pendingNeedsReload = true; LoadPending();
+                        SetStatus("Eliminata su Splitwise e in locale.");
+                    }
+                    catch (Exception ex) { SetStatus("Splitwise non eliminato (riga locale mantenuta): " + ex.Message, true); }
+                    finally { EndBusy(); }
+                    return;
+            }
+        }
+
+        // riga non inviata-dall'app: semplice eliminazione locale
+        if (MessageBox.Show($"Eliminare definitivamente questa riga (solo locale)?\n\n{info}", "Elimina riga",
                 MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
-        _db.DeleteMany(new List<long> { _ctxRowId });
-        _checked.Remove(_ctxRowId); _split.Remove(_ctxRowId); _dupInfo.Remove(_ctxRowId); _sentNotFound.Remove(_ctxRowId);
-        _pendingNeedsReload = true;
-        LoadPending();
+        _db.DeleteMany(new List<long> { rec?.Id ?? _ctxRowId });
+        CleanupRowRefs(_ctxRowId);
+        _pendingNeedsReload = true; LoadPending();
         SetStatus("Riga eliminata.");
+    }
+
+    private void CleanupRowRefs(long id)
+    { _checked.Remove(id); _split.Remove(id); _dupInfo.Remove(id); _sentNotFound.Remove(id); }
+
+    private enum SentDeleteChoice { Annulla, SoloLocale, Entrambe, SoloSplitwise }
+
+    // Dialog di scelta per le righe inviate dall'app: cosa eliminare.
+    private SentDeleteChoice AskSentDeleteChoice(string info, long swId)
+    {
+        var choice = SentDeleteChoice.Annulla;
+        using var f = new Form
+        {
+            Text = "Elimina spesa inviata a Splitwise", FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false,
+            ClientSize = new Size(480, 170)
+        };
+        f.Controls.Add(new Label { Left = 12, Top = 12, Width = 456, Height = 64, AutoSize = false,
+            Text = $"{info}\nInviata a Splitwise (ID {swId}).\nCosa vuoi eliminare?" });
+        var bLocal = new Button { Text = "Solo locale", Left = 12, Top = 90, Width = 145, Height = 34 };
+        var bBoth = new Button { Text = "Entrambe", Left = 165, Top = 90, Width = 145, Height = 34 };
+        var bSw = new Button { Text = "Solo Splitwise", Left = 318, Top = 90, Width = 145, Height = 34 };
+        var bCancel = new Button { Text = "Annulla", Left = 318, Top = 130, Width = 145, Height = 28, DialogResult = DialogResult.Cancel };
+        bLocal.Click += (_, _) => { choice = SentDeleteChoice.SoloLocale; f.DialogResult = DialogResult.OK; };
+        bBoth.Click += (_, _) => { choice = SentDeleteChoice.Entrambe; f.DialogResult = DialogResult.OK; };
+        bSw.Click += (_, _) => { choice = SentDeleteChoice.SoloSplitwise; f.DialogResult = DialogResult.OK; };
+        f.CancelButton = bCancel;
+        f.Controls.AddRange(new Control[] { bLocal, bBoth, bSw, bCancel });
+        f.ShowDialog(this);
+        return choice;
     }
 
     // Attiva/disattiva l'esclusione dai totali per la riga sotto il cursore.
@@ -1029,14 +1120,14 @@ public class MainForm : Form
         {
             if (string.IsNullOrWhiteSpace(_cfg?.InboxFolder))
             { SetStatus("Cartella inbox non configurata (InboxFolder in appsettings.json).", true); return; }
-            if (ImportFolder(_cfg.InboxFolder) > 0) await CheckPendingDuplicatesAsync();
+            if (ImportFolder(_cfg.InboxFolder) > 0) { await RunSplitwiseAutoFlush(); await CheckPendingDuplicatesAsync(); }
         };
         var btnFolder = new Button { Text = "Processa cartella…", Width = 150 };
         btnFolder.Click += async (_, _) =>
         {
             using var fbd = new FolderBrowserDialog { Description = "Cartella con file BPER/Satispay/CSV o screenshot" };
             if (fbd.ShowDialog() != DialogResult.OK) return;
-            if (ImportFolder(fbd.SelectedPath) > 0) await CheckPendingDuplicatesAsync();
+            if (ImportFolder(fbd.SelectedPath) > 0) { await RunSplitwiseAutoFlush(); await CheckPendingDuplicatesAsync(); }
         };
         topButtons.Controls.AddRange(new Control[] { _btnCsv, _btnPasteStamp, btnInbox, btnFolder, _btnAddManual });
 
@@ -1209,6 +1300,113 @@ public class MainForm : Form
         catch { /* nessun browser disponibile */ }
     }
 
+    // ---------- TAB REGOLE SPLITWISE ----------
+    private void BuildSwRulesTab()
+    {
+        var top = new Panel { Dock = DockStyle.Top, Height = 70, Padding = new Padding(10, 8, 10, 0) };
+        top.Controls.Add(new Label { Dock = DockStyle.Top, Height = 44, Text =
+            "Se la descrizione di un movimento importato CONTIENE una di queste frasi/parole (senza distinzione maiuscole/accenti), " +
+            "l'app prova a inviarlo a Splitwise automaticamente. Prima verifica con 'Confronta Splitwise': se risulterebbe " +
+            "verde/azzurro/giallo NON lo invia e scrive nelle Note \"verificare se caricare in splitwise\"." });
+
+        var add = new Panel { Dock = DockStyle.Top, Height = 34 };
+        _txtSwRule = new TextBox { Left = 0, Top = 4, Width = 360, PlaceholderText = "frase o parola (es. CRESCIAMO, ASILO, conto condiviso)" };
+        var btnAdd = new Button { Text = "Aggiungi", Left = 368, Top = 2, Width = 90, Height = 26 };
+        var btnDel = new Button { Text = "Elimina selezionata", Left = 464, Top = 2, Width = 150, Height = 26 };
+        void AddRule()
+        {
+            var p = _txtSwRule.Text.Trim();
+            if (p.Length == 0) return;
+            if (!_swRules.Contains(p, StringComparer.OrdinalIgnoreCase)) _swRules.Add(p);
+            _txtSwRule.Clear();
+            _db.SaveSplitwiseRules(_swRules);
+            RefreshSwRules();
+        }
+        btnAdd.Click += (_, _) => AddRule();
+        _txtSwRule.KeyDown += (_, e) => { if (e.KeyCode == Keys.Enter) { e.SuppressKeyPress = true; AddRule(); } };
+        btnDel.Click += (_, _) =>
+        {
+            if (_lstSwRules.SelectedItem is string s)
+            { _swRules.RemoveAll(x => string.Equals(x, s, StringComparison.OrdinalIgnoreCase)); _db.SaveSplitwiseRules(_swRules); RefreshSwRules(); }
+        };
+        add.Controls.AddRange(new Control[] { _txtSwRule, btnAdd, btnDel });
+
+        _lstSwRules = new ListBox { Dock = DockStyle.Fill };
+
+        _tabSwRules.Controls.Add(_lstSwRules);
+        _tabSwRules.Controls.Add(add);
+        _tabSwRules.Controls.Add(top);
+    }
+
+    private void RefreshSwRules()
+    {
+        _lstSwRules.BeginUpdate();
+        _lstSwRules.Items.Clear();
+        foreach (var r in _swRules.OrderBy(x => x)) _lstSwRules.Items.Add(r);
+        _lstSwRules.EndUpdate();
+    }
+
+    // Dal movimento sotto il cursore: prepara una regola Splitwise (descrizione modificabile) e la aggiunge.
+    private void AddSplitwiseRuleForRow()
+    {
+        if (!_splitwiseReady) { SetStatus("Splitwise non attivo.", true); return; }
+        var rec = _pendingView.FirstOrDefault(x => x.Id == _ctxRowId);
+        var initial = rec?.Description ?? _ctxDescription ?? "";
+
+        using var f = new Form
+        {
+            Text = "Aggiungi regola Splitwise", FormBorderStyle = FormBorderStyle.FixedDialog,
+            StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false,
+            ClientSize = new Size(540, 210)
+        };
+        var lbl = new Label { Left = 12, Top = 10, Width = 516, Height = 40,
+            Text = "Seleziona nella descrizione (o scrivi) la parola/frase: se un movimento la contiene, verrà inviato a Splitwise (con verifica anti-duplicato)." };
+        var src = new TextBox { Left = 12, Top = 54, Width = 516, Height = 52, Multiline = true, ReadOnly = true,
+            Text = initial, ScrollBars = ScrollBars.Vertical };
+        var lblK = new Label { Left = 12, Top = 120, AutoSize = true, Text = "Regola:" };
+        var kw = new TextBox { Left = 70, Top = 117, Width = 458, Text = initial };
+        void Sync(object? s, EventArgs e) { if (!string.IsNullOrWhiteSpace(src.SelectedText)) kw.Text = src.SelectedText.Trim(); }
+        src.MouseUp += Sync; src.KeyUp += Sync;
+        var ok = new Button { Text = "Aggiungi", Left = 340, Top = 160, Width = 90, Height = 30, DialogResult = DialogResult.OK };
+        var cancel = new Button { Text = "Annulla", Left = 438, Top = 160, Width = 90, Height = 30, DialogResult = DialogResult.Cancel };
+        f.AcceptButton = ok; f.CancelButton = cancel;
+        f.Controls.AddRange(new Control[] { lbl, src, lblK, kw, ok, cancel });
+        if (f.ShowDialog(this) != DialogResult.OK) return;
+
+        var phrase = kw.Text.Trim();
+        if (phrase.Length == 0) return;
+        if (!_swRules.Contains(phrase, StringComparer.OrdinalIgnoreCase)) _swRules.Add(phrase);
+        _db.SaveSplitwiseRules(_swRules);
+        RefreshSwRules();
+        SetStatus($"Regola Splitwise aggiunta: \"{phrase}\".");
+    }
+
+    // Applica le Regole Splitwise ai movimenti appena importati: invia gli "puliti", segnala nelle Note i dubbi.
+    private async Task RunSplitwiseAutoFlush()
+    {
+        if (_autoCandidateIds.Count == 0) return;
+        var ids = _autoCandidateIds.ToList();
+        _autoCandidateIds.Clear();
+        if (_client is null || !_splitwiseReady || _swRules.Count == 0) return;
+        try
+        {
+            BeginBusy("Regole Splitwise: invio automatico…");
+            var recs = _db.GetAll().Where(e => ids.Contains(e.Id)
+                            && e.Direction == ExpenseDirection.Uscita
+                            && !ExpenseParser.IsOverlapDescription(e.Description)
+                            && !IsNonSharedExpense(e)).ToList();
+            var (sent, flagged) = await SplitwiseAuto.ProcessAsync(
+                _db, _client, _cfg.GroupId, _me, _cfg.CurrencyCode, _swRules,
+                _numAmtTol.Value, (int)_numNearby.Value, recs);
+            _pendingNeedsReload = true;
+            LoadPending();
+            if (sent + flagged > 0)
+                SetStatus($"Regole Splitwise: {sent} inviate in automatico, {flagged} da verificare (vedi Note).");
+        }
+        catch (Exception ex) { SetStatus("Regole Splitwise: " + ex.Message, true); }
+        finally { EndBusy(); }
+    }
+
     private void LoadOptionsFromConfig()
     {
         if (_cfg is null) return;
@@ -1331,6 +1529,8 @@ public class MainForm : Form
             // 2) DB al percorso configurato (vuoto = history.db accanto all'exe)
             _db = new HistoryStore(_cfg.DbPath);
             _tagRules = _db.GetTagRules();
+            _swRules = _db.GetSplitwiseRules();
+            RefreshSwRules();
             MigrateManualTagsDelimiter();
             MigrateMultiManualTagsToRules();
             if (_db.GetMeta("card_source_migrated") != "1")
@@ -1365,6 +1565,7 @@ public class MainForm : Form
 
             // auto-import dei file lasciati nella cartella "inbox"
             ImportFolder(_cfg.InboxFolder);
+            await RunSplitwiseAutoFlush();   // regole Splitwise sui nuovi importati
             // confronto automatico sui dati attualmente mostrati
             await CheckPendingDuplicatesAsync();
         }
@@ -1413,6 +1614,7 @@ public class MainForm : Form
             if (!keys.Add(key)) { skipped++; continue; }   // già presente (o doppione nello stesso import)
             var id = _db.AddPending(r.Date, Desc(r), r.Amount, r.Source, r.Direction, batch);
             _split[id] = (r.Mode, r.CustomShares);
+            _autoCandidateIds.Add(id);   // candidato per le Regole Splitwise (auto-invio)
             // nessuna pre-selezione automatica: l'utente sceglie cosa inviare spuntando le righe
             added++;
         }
@@ -1612,6 +1814,7 @@ public class MainForm : Form
                 $"{added} movimenti importati" + (skipped > 0 ? $", {skipped} già presenti (scartati)" : "") + ".",
                 "Import file", MessageBoxButtons.OK, MessageBoxIcon.Information);
             SetStatus($"{name}: {added} importati" + (skipped > 0 ? $", {skipped} scartati" : "") + ".");
+            _ = RunSplitwiseAutoFlush();   // regole Splitwise sui nuovi importati
         }
         catch (Exception ex) { SetStatus("Errore import: " + ex.Message, true); }
     }
@@ -1635,6 +1838,7 @@ public class MainForm : Form
             }
             var results = StampProcessor.ProcessSingleFile(temp, tessData);
             ImportRows(results.Select(r => r.Row).ToList(), origin: "Immagine appunti");
+            _ = RunSplitwiseAutoFlush();
             var noAmount = results.Count(r => !r.Confident);
             SetStatus(results.Count == 0
                 ? "Nessuna spesa rilevata nell'immagine."

@@ -265,6 +265,26 @@ public class SplitwiseClient
             : 0;
     }
 
+    /// <summary>Elimina una spesa su Splitwise per id. Lancia eccezione se Splitwise riporta errori o "success" false.</summary>
+    public async Task DeleteExpenseAsync(long expenseId)
+    {
+        EnsureAuth();
+        var resp = await _http.PostAsync($"{Base}/api/v3.0/delete_expense/{expenseId}", null);
+        var body = await resp.Content.ReadAsStringAsync();
+        using var doc = JsonDocument.Parse(body);
+        var root = doc.RootElement;
+
+        if (root.TryGetProperty("errors", out var errors) &&
+            errors.ValueKind == JsonValueKind.Object && errors.EnumerateObject().Any())
+            throw new Exception($"Splitwise non ha eliminato la spesa: {errors.GetRawText()}");
+
+        if (root.TryGetProperty("success", out var ok) && ok.ValueKind == JsonValueKind.False)
+            throw new Exception($"Splitwise: eliminazione non riuscita. {body}");
+
+        if (!resp.IsSuccessStatusCode)
+            throw new Exception($"delete_expense HTTP {(int)resp.StatusCode}: {body}");
+    }
+
     private void EnsureAuth()
     {
         if (_accessToken is null)

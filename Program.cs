@@ -52,10 +52,33 @@ internal static class Program
             var cfg = JsonSerializer.Deserialize<AppConfig>(File.ReadAllText(cfgPath))!;
             if (string.IsNullOrWhiteSpace(cfg.InboxFolder)) { Log("ERRORE: InboxFolder non configurato in appsettings.json."); return 1; }
 
-            var db = new HistoryStore();
+            var db = new HistoryStore(cfg.DbPath);   // stesso DB configurato nell'app
             var tessData = Path.Combine(AppContext.BaseDirectory, "tessdata");
-            var (files, added, dup, skippedImg) = InboxProcessor.Run(db, cfg.InboxFolder, tessData, Log);
-            Log($"=== Fine batch: {files} file, {added} importati, {dup} scartati, {skippedImg} immagini saltate ===");
+            var (files, added, dup, skippedImg, addedIds) = InboxProcessor.Run(db, cfg.InboxFolder, tessData, Log);
+            Log($"=== Fine import: {files} file, {added} importati, {dup} scartati, {skippedImg} immagini saltate ===");
+
+            // Regole Splitwise: invio automatico dei nuovi importati (se Splitwise configurato e ci sono regole)
+            var rules = db.GetSplitwiseRules();
+            if (addedIds.Count > 0 && rules.Count > 0 && cfg.GroupId != 0
+                && !string.IsNullOrWhiteSpace(cfg.ConsumerKey) && !string.IsNullOrWhiteSpace(cfg.ConsumerSecret))
+            {
+                try
+                {
+                    Log("Regole Splitwise: verifica e invio automatico…");
+                    var client = new SplitwiseClient(cfg.ConsumerKey, cfg.ConsumerSecret);
+                    client.AuthenticateAsync().GetAwaiter().GetResult();
+                    var me = client.GetCurrentUserAsync().GetAwaiter().GetResult();
+                    var cands = db.GetAll().Where(e => addedIds.Contains(e.Id)
+                                    && e.Direction == ExpenseDirection.Uscita
+                                    && !ExpenseParser.IsOverlapDescription(e.Description)).ToList();
+                    var (sent, flagged) = SplitwiseAuto.ProcessAsync(db, client, cfg.GroupId, me, cfg.CurrencyCode,
+                        rules, cfg.AmountTolerance, cfg.NearbyDays, cands, Log).GetAwaiter().GetResult();
+                    Log($"Regole Splitwise: {sent} inviate in automatico, {flagged} da verificare (Note).");
+                }
+                catch (Exception ex) { Log("Regole Splitwise (batch) non riuscite: " + ex.Message); }
+            }
+
+            Log("=== Fine batch ===");
             return 0;
         }
         catch (Exception ex) { Log("ERRORE batch: " + ex); return 1; }

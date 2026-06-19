@@ -26,9 +26,12 @@ Write-Host "dotnet publish (Release) → $tmp"
 dotnet publish "$Proj" -c Release -o "$tmp"
 if ($LASTEXITCODE -ne 0) { Write-Host "PUBLISH FALLITA." -ForegroundColor Red; exit 1 }
 
-# 3) sicurezza: la build non dovrebbe contenerli, ma rimuovo comunque dati/config personali
+# 3) sicurezza: rimuovo dati/config personali e gli script di scarico BPER (hanno i tuoi percorsi, non servono a chi riceve)
 Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $tmp 'appsettings.json')
 Get-ChildItem -LiteralPath $tmp -Filter 'history.db*' -ErrorAction SilentlyContinue | Remove-Item -Force
+foreach ($s in 'scarica-bper.cmd', 'scarica-bper.ps1', 'scarica-bper-auto.cmd', 'scarica-bper-auto.js') {
+    Remove-Item -Force -ErrorAction SilentlyContinue (Join-Path $tmp $s)
+}
 
 # 4) crea lo zip in DistDir
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null

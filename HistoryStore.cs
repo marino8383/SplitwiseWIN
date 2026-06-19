@@ -120,6 +120,9 @@ public class HistoryStore
                 Key TEXT PRIMARY KEY,
                 Value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS splitwise_rules (
+                Phrase TEXT NOT NULL
+            );
             """;
         cmd.ExecuteNonQuery();
 
@@ -266,6 +269,16 @@ public class HistoryStore
             """;
         cmd.Parameters.AddWithValue("$sid", splitwiseExpenseId);
         cmd.Parameters.AddWithValue("$sent", DateTime.UtcNow.Ticks);
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>Riporta a Pending e azzera il collegamento a Splitwise (dopo aver eliminato la spesa su Splitwise).</summary>
+    public void UnmarkSent(long id)
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "UPDATE expenses SET Status='Pending', SplitwiseExpenseId=0, SentAtUtcTicks=NULL WHERE Id=$id;";
         cmd.Parameters.AddWithValue("$id", id);
         cmd.ExecuteNonQuery();
     }
@@ -418,6 +431,34 @@ public class HistoryStore
         cmd.Parameters.AddWithValue("$t", tagsCsv ?? "");
         cmd.Parameters.AddWithValue("$id", id);
         cmd.ExecuteNonQuery();
+    }
+
+    // ---------- REGOLE SPLITWISE (frasi/parole che attivano l'invio automatico) ----------
+    public List<string> GetSplitwiseRules()
+    {
+        using var c = Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT Phrase FROM splitwise_rules ORDER BY Phrase;";
+        var list = new List<string>();
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) { var p = r.GetString(0); if (!string.IsNullOrWhiteSpace(p)) list.Add(p); }
+        return list;
+    }
+
+    public void SaveSplitwiseRules(IEnumerable<string> phrases)
+    {
+        using var c = Open();
+        using var tx = c.BeginTransaction();
+        using (var del = c.CreateCommand()) { del.Transaction = tx; del.CommandText = "DELETE FROM splitwise_rules;"; del.ExecuteNonQuery(); }
+        foreach (var p in phrases.Select(x => x.Trim()).Where(x => x.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            using var ins = c.CreateCommand();
+            ins.Transaction = tx;
+            ins.CommandText = "INSERT INTO splitwise_rules(Phrase) VALUES($p);";
+            ins.Parameters.AddWithValue("$p", p);
+            ins.ExecuteNonQuery();
+        }
+        tx.Commit();
     }
 
     // ---------- META (flag di migrazione e simili) ----------

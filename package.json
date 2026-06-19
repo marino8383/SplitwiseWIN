@@ -1,0 +1,23 @@
+{
+  "name": "splitwise",
+  "version": "1.0.0",
+  "description": "App WinForms .NET 8 per importare spese da BPER/Satispay (testo, CSV, cartella CSV) e da screenshot (OCR offline), gestirle in un ciclo di vita persistente (SQLite) e inviarle a Splitwise via API, con deduplica e archivio.",
+  "main": "scarica-bper-auto.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/marino8383/SplitwiseWIN.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/marino8383/SplitwiseWIN/issues"
+  },
+  "homepage": "https://github.com/marino8383/SplitwiseWIN#readme",
+  "dependencies": {
+    "playwright": "^1.61.0"
+  }
+}
